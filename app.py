@@ -4,23 +4,21 @@ import json
 import os
 from dotenv import load_dotenv
 from flask_ngrok import run_with_ngrok
+from fastapi import FastAPI
+from fastapi import Request
 
 load_dotenv()
 
-app = Flask(__name__)
-run_with_ngrok(app)
+app = FastAPI()
 
 
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    data = request.json
-    print("Received message: ", json.dumps(data, indent=4))
-
-    chat_id = data['message']['chat']['id']
-    message_text = "Привіт, я отримав твоє повідомлення!"
-
-    send_to_telegram(chat_id, message_text)
-    return "OK"
+@app.post('/webhook')
+async def webhook(request: Request):
+    data = await request.json()
+    response_text = data['message']['text']
+    print("Received data:", data)
+    send_to_telegram(data['message']['chat']['id'], response_text)
+    return {"status": "success"}
 
 
 def send_to_telegram(chat_id, message):
@@ -30,8 +28,11 @@ def send_to_telegram(chat_id, message):
         "chat_id": chat_id,
         "text": message
     }
-    requests.post(url, data=data)
+    response = requests.post(url, data=data)
+    print("Response from Telegram:", response.json())
+    return response.json()
 
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8080, log_level="info")

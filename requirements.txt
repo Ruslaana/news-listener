@@ -3,3 +3,4 @@ apscheduler
 python-dotenv
 Flask
 flask-ngrok
+fastapi
