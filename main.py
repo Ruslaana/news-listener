@@ -35,7 +35,7 @@ def check_news():
         with open("last_news.json", "w") as f:
             json.dump(latest_news, f)
     else:
-        print("Нічого нового")
+        print("Немає нових новин")
 
 
 scheduler = BlockingScheduler()
