@@ -5,6 +5,7 @@ import time
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from middlewares.flood_control import check_flood
+from bot.subscribers import add_subscriber
 
 load_dotenv()
 app = FastAPI()
@@ -36,7 +37,10 @@ def send_welcome_photo(chat_id):
 
     with open(photo_path, "rb") as photo_file:
         files = {"photo": photo_file}
-        data = {"chat_id": chat_id}
+        data = {
+            "chat_id": chat_id,
+            "disable_notification": True
+        }
         response = requests.post(url, data=data, files=files)
         print("Welcome photo sent:", response.json())
 
@@ -63,11 +67,29 @@ def consent_buttons():
     }
 
 
+def send_first_news(chat_id):
+    api_url = os.getenv("NEWS_API_URL")
+    try:
+        response = requests.get(f"{api_url}/latest")
+        if response.status_code == 200:
+            news_item = response.json()
+            if news_item and "title" in news_item:
+                send_message(chat_id, f"🗞 {news_item['title']}")
+            else:
+                send_message(chat_id, "ℹ️ Наразі немає новин для показу.")
+        else:
+            print("❌ News API error", response.status_code)
+    except Exception as e:
+        print("🔥 Failed to fetch news:", e)
+        send_message(chat_id, "⚠️ Сталася помилка при завантаженні новини.")
+
+
 @app.post("/webhook")
 async def webhook(request: Request):
     data = await request.json()
     print("📥 Incoming update:", json.dumps(data, indent=2, ensure_ascii=False))
 
+    # === FLOOD CONTROL ===
     if "message" in data:
         user_id = data["message"]["from"]["id"]
     elif "callback_query" in data:
@@ -84,6 +106,7 @@ async def webhook(request: Request):
         send_message(chat_id, flood_message)
         return {"status": "flood_controlled"}
 
+    # === CALLBACK ===
     if "callback_query" in data:
         callback = data["callback_query"]
         chat_id = callback["message"]["chat"]["id"]
@@ -98,8 +121,10 @@ async def webhook(request: Request):
             del last_warnings[user_id]
 
         if user_choice == "accept":
+            add_subscriber(chat_id)
             send_message(
                 chat_id, "✅ Дякуємо! Ви дали згоду на обробку персональних даних.")
+            send_first_news(chat_id)
         elif user_choice == "decline":
             new_warning = send_message(
                 chat_id,
@@ -130,6 +155,7 @@ async def webhook(request: Request):
         last_warnings[user_id] = msg_id
         return {"status": "consent_requested"}
 
+    # ❗ Некоректна дія
     old_warning_id = last_warnings.get(user_id)
     if old_warning_id:
         delete_message(chat_id, old_warning_id)
@@ -146,5 +172,8 @@ async def webhook(request: Request):
 
 
 if __name__ == "__main__":
+    from bot.scheduler import schedule_news_tasks
+    schedule_news_tasks()
+
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8080, log_level="info")
