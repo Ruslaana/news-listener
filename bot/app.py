@@ -166,8 +166,13 @@ def notify_unblocked_users():
                 if last_warnings.get(user_id):
                     delete_message(chat_id, last_warnings[user_id])
                     del last_warnings[user_id]
-                send_message(chat_id, "✅ Блок завершено.")
-                time.sleep(1)
+
+                done_msg_id = send_message(chat_id, "✅ Блок завершено.")
+                time.sleep(2)
+
+                if done_msg_id:
+                    delete_message(chat_id, done_msg_id)
+
                 msg_id = send_message(
                     chat_id,
                     "🔐 Для користування ботом потрібно підтвердити обробку персональних даних.\n"
@@ -175,7 +180,7 @@ def notify_unblocked_users():
                     reply_markup=consent_buttons()
                 )
                 last_warnings[user_id] = msg_id
-        sleep(1)
+        sleep(3)
 
 
 @app.on_event("startup")
