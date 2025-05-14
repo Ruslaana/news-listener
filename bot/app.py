@@ -4,7 +4,13 @@ import requests
 import time
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
-from middlewares.flood_control import check_flood
+from threading import Thread
+from time import sleep
+from middlewares.flood_control import (
+    check_flood,
+    track_blocked_user,
+    get_expired_unblocks
+)
 from bot.subscribers import add_subscriber
 
 load_dotenv()
@@ -25,36 +31,22 @@ def send_message(chat_id, text, reply_markup=None):
     }
     if reply_markup:
         data["reply_markup"] = json.dumps(reply_markup)
-
     response = requests.post(url, data=data)
-    result = response.json()
-    print("Message sent:", result)
-    return result.get("result", {}).get("message_id")
+    return response.json().get("result", {}).get("message_id")
 
 
 def send_welcome_photo(chat_id):
     url = f"https://api.telegram.org/bot{TOKEN}/sendPhoto"
-    photo_path = "./danish_news_bot_image.png"
-
-    with open(photo_path, "rb") as photo_file:
+    with open("./danish_news_bot_image.png", "rb") as photo_file:
         files = {"photo": photo_file}
-        data = {
-            "chat_id": chat_id,
-            "disable_notification": True
-        }
-        response = requests.post(url, data=data, files=files)
-        print("Welcome photo sent:", response.json())
+        data = {"chat_id": chat_id, "disable_notification": True}
+        requests.post(url, data=data, files=files)
 
 
 def delete_message(chat_id, message_id):
     url = f"https://api.telegram.org/bot{TOKEN}/deleteMessage"
-    data = {
-        "chat_id": chat_id,
-        "message_id": message_id
-    }
-    response = requests.post(url, data=data)
-    print("Deleted message:", response.json())
-    return response.json()
+    data = {"chat_id": chat_id, "message_id": message_id}
+    requests.post(url, data=data)
 
 
 def consent_buttons():
@@ -78,47 +70,46 @@ def send_first_news(chat_id):
                 send_message(chat_id, f"🗞 {news_item['title']}")
             else:
                 send_message(chat_id, "ℹ️ Наразі немає новин для показу.")
-        else:
-            print("❌ News API error", response.status_code)
-    except Exception as e:
-        print("🔥 Failed to fetch news:", e)
+    except Exception:
         send_message(chat_id, "⚠️ Сталася помилка при завантаженні новини.")
 
 
 @app.post("/webhook")
 async def webhook(request: Request):
     data = await request.json()
-    print("📥 Incoming update:", json.dumps(data, indent=2, ensure_ascii=False))
+    print("📥 Incoming:", json.dumps(data, indent=2, ensure_ascii=False))
 
-    # === FLOOD CONTROL ===
+    user_id = (data.get("message", {}).get("from", {}).get("id") or
+               data.get("callback_query", {}).get("from", {}).get("id"))
+    chat_id = (data.get("message", {}).get("chat", {}).get("id") or
+               data.get("callback_query", {}).get("message", {}).get("chat", {}).get("id"))
+
     if "message" in data:
-        user_id = data["message"]["from"]["id"]
-    elif "callback_query" in data:
-        user_id = data["callback_query"]["from"]["id"]
-    else:
-        return {"status": "unhandled"}
+        text = data["message"].get("text", "").strip().lower()
+        if text != "/start":
+            flood_triggered, flood_message, show_buttons = check_flood(user_id)
+            if flood_triggered:
+                delete_message(chat_id, data["message"]["message_id"])
+                time.sleep(1)
+                if last_warnings.get(user_id):
+                    delete_message(chat_id, last_warnings[user_id])
+                track_blocked_user(user_id, chat_id)
+                msg_id = send_message(
+                    chat_id,
+                    flood_message,
+                    reply_markup=consent_buttons() if show_buttons else None
+                )
+                last_warnings[user_id] = msg_id
+                return {"status": "flood_control_applied"}
 
-    flood_triggered, flood_message = check_flood(user_id)
-    chat_id = data.get("message", {}).get("chat", {}).get("id") or \
-        data.get("callback_query", {}).get(
-            "message", {}).get("chat", {}).get("id")
-
-    if flood_triggered and chat_id:
-        send_message(chat_id, flood_message)
-        return {"status": "flood_controlled"}
-
-    # === CALLBACK ===
     if "callback_query" in data:
         callback = data["callback_query"]
-        chat_id = callback["message"]["chat"]["id"]
         message_id = callback["message"]["message_id"]
         user_choice = callback["data"]
 
         delete_message(chat_id, message_id)
-
-        old_warning_id = last_warnings.get(user_id)
-        if old_warning_id:
-            delete_message(chat_id, old_warning_id)
+        if last_warnings.get(user_id):
+            delete_message(chat_id, last_warnings[user_id])
             del last_warnings[user_id]
 
         if user_choice == "accept":
@@ -127,54 +118,70 @@ async def webhook(request: Request):
                 chat_id, "✅ Дякуємо! Ви дали згоду на обробку персональних даних.")
             send_first_news(chat_id)
         elif user_choice == "decline":
-            new_warning = send_message(
+            msg_id = send_message(
                 chat_id,
                 "❌ Без згоди на обробку персональних даних бот не може працювати.\n\n"
-                "Будь ласка, підтвердіть згоду нижче.",
+                "🔐 [Ознайомитись з політикою](https://bevarukraine.dk/uk/osobysti-dani/)",
                 reply_markup=consent_buttons()
             )
-            last_warnings[user_id] = new_warning
-
+            last_warnings[user_id] = msg_id
         return {"status": "callback_handled"}
 
-    message = data.get("message", {})
-    text = message.get("text", "").strip()
-    chat_id = message.get("chat", {}).get("id")
-
-    if text.lower() == "/start":
+    if data.get("message", {}).get("text", "").strip().lower() == "/start":
         send_welcome_photo(chat_id)
-
         welcome_text = (
             "🇩🇰 *Вітаємо на нашому новинному каналі!*\n\n"
             "Тут ви знайдете найсвіжіші новини про події в Данії. "
             "Ми тримаємо вас у курсі всіх важливих змін та новинок у країні.\n\n"
             "🔐 *Чи даєте ви згоду на обробку персональних даних?*\n"
-            "[Ознайомитись з політикою →](https://bevarukraine.dk/uk/osobysti-dani/)"
+            "[Ознайомитись з політикою](https://bevarukraine.dk/uk/osobysti-dani/)"
         )
         msg_id = send_message(chat_id, welcome_text,
                               reply_markup=consent_buttons())
         last_warnings[user_id] = msg_id
         return {"status": "consent_requested"}
 
-    # ❗ Некоректна дія
-    old_warning_id = last_warnings.get(user_id)
-    if old_warning_id:
-        delete_message(chat_id, old_warning_id)
+    if "message" in data:
+        delete_message(chat_id, data["message"]["message_id"])
+        time.sleep(1)
 
-    warning_text = (
-        "⚠️ Спочатку потрібно дати згоду на обробку персональних даних, "
-        "щоб користуватись ботом.\n\n"
-        "[Ознайомитись з політикою →](https://bevarukraine.dk/uk/osobysti-dani/)"
+    if last_warnings.get(user_id):
+        delete_message(chat_id, last_warnings[user_id])
+
+    msg_id = send_message(
+        chat_id,
+        "⚠️ Спершу потрібно дати згоду на обробку персональних даних.\n\n"
+        "[Ознайомитись з політикою](https://bevarukraine.dk/uk/osobysti-dani/)",
+        reply_markup=consent_buttons()
     )
-    new_msg_id = send_message(chat_id, warning_text,
-                              reply_markup=consent_buttons())
-    last_warnings[user_id] = new_msg_id
-    return {"status": "forced_consent"}
+    last_warnings[user_id] = msg_id
+    return {"status": "consent_forced"}
+
+
+def notify_unblocked_users():
+    while True:
+        expired = get_expired_unblocks()
+        if expired:
+            for user_id, chat_id in expired:
+                print(
+                    f"[DEBUG] Авто-сповіщення: розблоковано user_id {user_id}")
+                send_message(chat_id, "✅ Блок завершено.")
+                sleep(1)
+                msg_id = send_message(
+                    chat_id,
+                    "🔐 Для користування ботом потрібно підтвердити обробку персональних даних.\n"
+                    "[Ознайомитись з політикою](https://bevarukraine.dk/uk/osobysti-dani/)",
+                    reply_markup=consent_buttons()
+                )
+                last_warnings[user_id] = msg_id
+        sleep(1)
 
 
 if __name__ == "__main__":
     from bot.scheduler import schedule_news_tasks
     schedule_news_tasks()
+
+    Thread(target=notify_unblocked_users, daemon=True).start()
 
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8080, log_level="info")
