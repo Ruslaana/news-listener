@@ -6,7 +6,7 @@ blocked_users = {}
 permanent_ban = set()
 active_blocks = {}
 
-ADMIN_EMAIL = "support@bevarukraine.dk"
+ADMIN_EMAIL = "test@admin.dk"
 
 
 def format_time(seconds):
