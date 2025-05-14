@@ -20,7 +20,8 @@ def send_message(chat_id, text, reply_markup=None):
         "chat_id": chat_id,
         "text": text,
         "parse_mode": "Markdown",
-        "disable_notification": True
+        "disable_notification": True,
+        "disable_web_page_preview": True
     }
     if reply_markup:
         data["reply_markup"] = json.dumps(reply_markup)
