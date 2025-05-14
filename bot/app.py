@@ -77,7 +77,6 @@ def send_first_news(chat_id):
 @app.post("/webhook")
 async def webhook(request: Request):
     data = await request.json()
-    print("📥 Incoming:", json.dumps(data, indent=2, ensure_ascii=False))
 
     user_id = (data.get("message", {}).get("from", {}).get("id") or
                data.get("callback_query", {}).get("from", {}).get("id"))
@@ -87,7 +86,8 @@ async def webhook(request: Request):
     if "message" in data:
         text = data["message"].get("text", "").strip().lower()
         if text != "/start":
-            flood_triggered, flood_message, show_buttons = check_flood(user_id)
+            flood_triggered, flood_message, show_buttons = check_flood(
+                user_id, chat_id)
             if flood_triggered:
                 delete_message(chat_id, data["message"]["message_id"])
                 time.sleep(1)
@@ -163,10 +163,11 @@ def notify_unblocked_users():
         expired = get_expired_unblocks()
         if expired:
             for user_id, chat_id in expired:
-                print(
-                    f"[DEBUG] Авто-сповіщення: розблоковано user_id {user_id}")
+                if last_warnings.get(user_id):
+                    delete_message(chat_id, last_warnings[user_id])
+                    del last_warnings[user_id]
                 send_message(chat_id, "✅ Блок завершено.")
-                sleep(1)
+                time.sleep(1)
                 msg_id = send_message(
                     chat_id,
                     "🔐 Для користування ботом потрібно підтвердити обробку персональних даних.\n"
@@ -177,11 +178,6 @@ def notify_unblocked_users():
         sleep(1)
 
 
-if __name__ == "__main__":
-    from bot.scheduler import schedule_news_tasks
-    schedule_news_tasks()
-
+@app.on_event("startup")
+def startup_event():
     Thread(target=notify_unblocked_users, daemon=True).start()
-
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8080, log_level="info")
