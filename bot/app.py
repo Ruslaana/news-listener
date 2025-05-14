@@ -2,10 +2,9 @@ import os
 import json
 import requests
 import time
+import xml.etree.ElementTree as ET
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
-from threading import Thread
-from time import sleep
 from middlewares.flood_control import (
     check_flood,
     track_blocked_user,
@@ -60,18 +59,31 @@ def consent_buttons():
     }
 
 
-def send_first_news(chat_id):
-    api_url = os.getenv("NEWS_API_URL")
+def fetch_latest_news():
+    sitemap_url = "https://www.berlingske.dk/sitemap.xml/tag/1"
     try:
-        response = requests.get(f"{api_url}/latest")
-        if response.status_code == 200:
-            news_item = response.json()
-            if news_item and "title" in news_item:
-                send_message(chat_id, f"🗞 {news_item['title']}")
-            else:
-                send_message(chat_id, "ℹ️ Наразі немає новин для показу.")
+        response = requests.get(sitemap_url)
+        response.raise_for_status()
+        root = ET.fromstring(response.text)
+        news_items = []
+
+        for url in root.findall(".//{http://www.sitemaps.org/schemas/sitemap/0.9}url"):
+            loc = url.find("{http://www.sitemaps.org/schemas/sitemap/0.9}loc")
+            if loc is not None:
+                news_items.append({"id": loc.text, "title": loc.text})
+        return news_items
     except Exception:
-        send_message(chat_id, "⚠️ Сталася помилка при завантаженні новини.")
+        return []
+
+
+def send_first_news(chat_id):
+    all_news = fetch_latest_news()
+    if not all_news:
+        send_message(chat_id, "⚠️ Наразі не вдалося отримати новини.")
+        return
+
+    latest = all_news[0]
+    send_message(chat_id, f"📰 {latest['title']}")
 
 
 @app.post("/webhook")
@@ -156,33 +168,3 @@ async def webhook(request: Request):
     )
     last_warnings[user_id] = msg_id
     return {"status": "consent_forced"}
-
-
-def notify_unblocked_users():
-    while True:
-        expired = get_expired_unblocks()
-        if expired:
-            for user_id, chat_id in expired:
-                if last_warnings.get(user_id):
-                    delete_message(chat_id, last_warnings[user_id])
-                    del last_warnings[user_id]
-
-                done_msg_id = send_message(chat_id, "✅ Блок завершено.")
-                time.sleep(2)
-
-                if done_msg_id:
-                    delete_message(chat_id, done_msg_id)
-
-                msg_id = send_message(
-                    chat_id,
-                    "🔐 Для користування ботом потрібно підтвердити обробку персональних даних.\n"
-                    "[Ознайомитись з політикою](https://bevarukraine.dk/uk/osobysti-dani/)",
-                    reply_markup=consent_buttons()
-                )
-                last_warnings[user_id] = msg_id
-        sleep(3)
-
-
-@app.on_event("startup")
-def startup_event():
-    Thread(target=notify_unblocked_users, daemon=True).start()
