@@ -1,12 +1,49 @@
 import time
+import json
+import os
 
-user_violations = {}
+BLOCKS_FILE = "bot/blocks.json"
+
 user_strikes = {}
 blocked_users = {}
 permanent_ban = set()
 active_blocks = {}
 
 ADMIN_EMAIL = "test@admin.dk"
+
+
+def save_blocked():
+    os.makedirs("bot", exist_ok=True)
+    data = {
+        "blocked_users": blocked_users,
+        "permanent_ban": list(permanent_ban),
+        "active_blocks": active_blocks
+    }
+    with open(BLOCKS_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+def load_blocked():
+    os.makedirs("bot", exist_ok=True)
+    if not os.path.exists(BLOCKS_FILE):
+        with open(BLOCKS_FILE, "w", encoding="utf-8") as f:
+            json.dump({}, f)
+        return
+
+    with open(BLOCKS_FILE, "r", encoding="utf-8") as f:
+        data = json.load(f)
+        global blocked_users, permanent_ban, active_blocks
+        blocked_users = data.get("blocked_users", {})
+        permanent_ban = set(data.get("permanent_ban", []))
+        active_blocks = data.get("active_blocks", {})
+
+
+def get_all_blocked_users():
+    return {
+        "blocked_users": blocked_users,
+        "permanent_ban": list(permanent_ban),
+        "active_blocks": active_blocks
+    }
 
 
 def format_time(seconds):
@@ -23,66 +60,66 @@ def check_flood(user_id, chat_id=None):
     now = time.time()
 
     if user_id in permanent_ban:
-        return True, f"🚷 Ви заблоковані назавжди. Зверніться до {ADMIN_EMAIL}", False
+        return True, f"😷 Ви заблоковані назавжди. Зверніться до {ADMIN_EMAIL}", False
 
     if user_id in blocked_users:
         entry = blocked_users[user_id]
-        if now >= entry["unblock_at"]:
-            del blocked_users[user_id]
-            user_violations.pop(user_id, None)
-            user_strikes.pop(user_id, None)
+        if now < entry["unblock_at"]:
+            remaining = int(entry["unblock_at"] - now)
+            return True, f"⏳ Ви під блокуванням. Залишилось {format_time(remaining)}.", False
         else:
-            user_violations[user_id] = user_violations.get(user_id, 0) + 1
-            count = user_violations[user_id]
+            del blocked_users[user_id]
+            save_blocked()
 
-            if count == 3:
-                user_strikes[user_id] = 2
-                blocked_users[user_id] = {
-                    "unblock_at": now + 180, "chat_id": chat_id}
-                track_blocked_user(user_id, chat_id)
-                return True, (
-                    "🚫 Ви написали під час блокування. Блок подовжено до 3 хвилин.\n\n"
-                    "(Після завершення блоку бот автоматично нагадає про згоду.)"
-                ), False
+    strikes = user_strikes.get(user_id, 0)
 
-            elif count >= 4:
-                user_strikes[user_id] = 3
-                permanent_ban.add(user_id)
-                del blocked_users[user_id]
-                return True, f"🚷 Ви заблоковані назавжди. Зверніться до {ADMIN_EMAIL}", False
-
-            else:
-                remaining = int(entry["unblock_at"] - now)
-                return True, (
-                    f"⏳ Ви знаходитесь під блокуванням. Залишилось {format_time(remaining)}."
-                ), False
-
-    new_count = user_violations.get(user_id, 0) + 1
-    user_violations[user_id] = new_count
-
-    if new_count == 1:
+    if strikes == 0:
+        user_strikes[user_id] = -1  # попередження
         return True, (
             "⚠️ Спершу потрібно дати згоду на обробку персональних даних.\n\n"
             "🔐 [Ознайомитись з політикою](https://bevarukraine.dk/uk/osobysti-dani/)\n\n"
-            "Без згоди користуватись ботом неможливо. Якщо ви напишете ще раз, "
-            "то бот заблокує вас на 1 хвилину.\n\n"
+            "❗ Якщо ви натиснете ще раз \"Ні\" — буде блокування на 1 хвилину."
         ), True
 
-    elif new_count == 2:
+    elif strikes == -1:
         user_strikes[user_id] = 1
         blocked_users[user_id] = {"unblock_at": now + 60, "chat_id": chat_id}
         track_blocked_user(user_id, chat_id)
+        save_blocked()
         return True, (
-            f"🚫 Ви тимчасово заблоковані на {format_time(60)} за ігнорування згоди.\n\n"
-            "(Після завершення блоку бот автоматично нагадає про згоду.)"
+            "🚫 Ви тимчасово заблоковані на 1 хвилину за ігнорування згоди.\n\n"
+            "Після завершення блоку бот автоматично нагадає про згоду."
         ), False
 
-    return True, "⚠️ Невідома дія. Підтвердіть згоду або зачекайте.", True
+    elif strikes == 1:
+        user_strikes[user_id] = 2
+        blocked_users[user_id] = {"unblock_at": now + 180, "chat_id": chat_id}
+        track_blocked_user(user_id, chat_id)
+        save_blocked()
+        return True, (
+            "🚫 Ви знову порушили умови. Блок подовжено до 3 хвилин.\n\n"
+            "Після завершення блоку бот знову запропонує дати згоду."
+        ), False
+
+    elif strikes >= 2:
+        user_strikes[user_id] = 3
+        permanent_ban.add(user_id)
+        blocked_users.pop(user_id, None)
+        save_blocked()
+        return True, (
+            f"😷 Ви заблоковані назавжди. Зверніться до адміністратора: {ADMIN_EMAIL}"
+        ), False
+
+    return True, (
+        "⚠️ Потрібно дати згоду на обробку персональних даних.\n\n"
+        "🔐 [Ознайомитись з політикою](https://bevarukraine.dk/uk/osobysti-dani/)"
+    ), True
 
 
 def track_blocked_user(user_id, chat_id):
     if chat_id:
         active_blocks[user_id] = chat_id
+        save_blocked()
 
 
 def get_expired_unblocks():
@@ -94,6 +131,18 @@ def get_expired_unblocks():
             if chat_id:
                 expired.append((user_id, chat_id))
             del blocked_users[user_id]
-            user_violations.pop(user_id, None)
-            user_strikes.pop(user_id, None)
+    if expired:
+        save_blocked()
     return expired
+
+
+def reset_user_state(user_id):
+    user_strikes.pop(user_id, None)
+    blocked_users.pop(user_id, None)
+    active_blocks.pop(user_id, None)
+    if user_id in permanent_ban:
+        permanent_ban.remove(user_id)
+    save_blocked()
+
+
+load_blocked()

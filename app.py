@@ -12,15 +12,19 @@ from contextlib import asynccontextmanager
 from middlewares.flood_control import (
     check_flood,
     track_blocked_user,
-    get_expired_unblocks
+    get_expired_unblocks,
+    get_all_blocked_users,
+    reset_user_state,
+    user_strikes
 )
 from bot.subscribers import add_subscriber
+from bot.utils import send_message, delete_message
+from bot.scheduler import schedule_news_tasks
 
 load_dotenv()
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 NEWS_API_URL = os.getenv("NEWS_API_URL")
-
 last_warnings = {}
 
 
@@ -39,39 +43,9 @@ def format_telegram_text(news):
     footer = f"\n\n🕒 {publication_time}\n✍️ {author}\n🔗 [Читати новину]({source})"
 
     max_content_len = 1024 - len(header) - len(footer)
-
     short_content = content[:max_content_len].rstrip() + "..."
 
     return header + short_content + footer
-
-
-def send_message(chat_id, text, reply_markup=None):
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    data = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "Markdown",
-        "disable_notification": True,
-        "disable_web_page_preview": True
-    }
-    if reply_markup:
-        data["reply_markup"] = json.dumps(reply_markup)
-    response = requests.post(url, data=data)
-    return response.json().get("result", {}).get("message_id")
-
-
-def send_welcome_photo(chat_id):
-    url = f"https://api.telegram.org/bot{TOKEN}/sendPhoto"
-    with open("./danish_news_bot_image.png", "rb") as photo_file:
-        files = {"photo": photo_file}
-        data = {"chat_id": chat_id, "disable_notification": True}
-        requests.post(url, data=data, files=files)
-
-
-def delete_message(chat_id, message_id):
-    url = f"https://api.telegram.org/bot{TOKEN}/deleteMessage"
-    data = {"chat_id": chat_id, "message_id": message_id}
-    requests.post(url, data=data)
 
 
 def consent_buttons():
@@ -83,10 +57,18 @@ def consent_buttons():
     }
 
 
+def send_welcome_photo(chat_id):
+    url = f"https://api.telegram.org/bot{TOKEN}/sendPhoto"
+    with open("./danish_news_bot_image.png", "rb") as photo_file:
+        files = {"photo": photo_file}
+        data = {"chat_id": chat_id, "disable_notification": True}
+        response = requests.post(url, data=data, files=files)
+        return response.json().get("result", {}).get("message_id")
+
+
 def send_first_news(chat_id):
     try:
         response = requests.get(f"{NEWS_API_URL}/latest")
-
         if response.status_code != 200:
             send_message(chat_id, "⚠️ Не вдалося отримати новину.")
             return
@@ -111,15 +93,7 @@ def send_first_news(chat_id):
                 }
             )
         else:
-            requests.post(
-                f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-                json={
-                    "chat_id": chat_id,
-                    "text": text,
-                    "parse_mode": "Markdown",
-                    "disable_web_page_preview": False
-                }
-            )
+            send_message(chat_id, text)
 
     except Exception:
         send_message(chat_id, "⚠️ Не вдалося завантажити новину.")
@@ -128,32 +102,48 @@ def send_first_news(chat_id):
 def notify_unblocked_users():
     while True:
         expired = get_expired_unblocks()
-        if expired:
-            for user_id, chat_id in expired:
-                if last_warnings.get(user_id):
-                    delete_message(chat_id, last_warnings[user_id])
-                    del last_warnings[user_id]
+        for user_id, chat_id in expired:
+            if last_warnings.get(user_id):
+                for mid in last_warnings[user_id]:
+                    delete_message(chat_id, mid)
+                del last_warnings[user_id]
 
-                done_msg_id = send_message(chat_id, "✅ Блок завершено.")
-                time.sleep(2)
+            done_msg_id = send_message(chat_id, "✅ Блок завершено.")
+            time.sleep(1)
+            delete_message(chat_id, done_msg_id)
 
-                if done_msg_id:
-                    delete_message(chat_id, done_msg_id)
+            strike = user_strikes.get(user_id, 0)
 
-                msg_id = send_message(
-                    chat_id,
+            if strike == 1:
+                info_text = (
                     "🔐 Для користування ботом потрібно підтвердити обробку персональних даних.\n"
-                    "[Ознайомитись з політикою](https://bevarukraine.dk/uk/osobysti-dani/)",
-                    reply_markup=consent_buttons()
+                    "[Ознайомитись з політикою](https://bevarukraine.dk/uk/osobysti-dani/)\n\n"
+                    "❗ Якщо ви натиснете ще раз \"Ні\", вас буде заблоковано на 3 хвилини."
                 )
-                last_warnings[user_id] = msg_id
+            elif strike == 2:
+                info_text = (
+                    "🔐 Для користування ботом потрібно підтвердити обробку персональних даних.\n"
+                    "[Ознайомитись з політикою](https://bevarukraine.dk/uk/osobysti-dani/)\n\n"
+                    "❗ Якщо ви натиснете ще раз \"Ні\", вас буде заблоковано назавжди."
+                )
+            else:
+                info_text = (
+                    "🔐 Для користування ботом потрібно підтвердити обробку персональних даних.\n"
+                    "[Ознайомитись з політикою](https://bevarukraine.dk/uk/osobysti-dani/)"
+                )
+
+            msg_id = send_message(chat_id, info_text,
+                                  reply_markup=consent_buttons())
+            last_warnings[user_id] = [msg_id]
         sleep(3)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Thread(target=notify_unblocked_users, daemon=True).start()
+    schedule_news_tasks()
     yield
+
 
 app = FastAPI(lifespan=lifespan)
 
@@ -164,15 +154,20 @@ def get_subscribers():
     return load_subscribers()
 
 
+@app.get("/blocked")
+def get_blocked_users():
+    return get_all_blocked_users()
+
+
 @app.post("/webhook")
 async def webhook(request: Request):
     data = await request.json()
+    user_id = (data.get("message", {}) or data.get(
+        "callback_query", {})).get("from", {}).get("id")
+    chat_id = (data.get("message", {}) or data.get(
+        "callback_query", {}).get("message", {})).get("chat", {}).get("id")
 
-    user_id = (data.get("message", {}).get("from", {}).get("id") or
-               data.get("callback_query", {}).get("from", {}).get("id"))
-    chat_id = (data.get("message", {}).get("chat", {}).get("id") or
-               data.get("callback_query", {}).get("message", {}).get("chat", {}).get("id"))
-
+    # TEXT MESSAGE
     if "message" in data:
         text = data["message"].get("text", "").strip().lower()
         if text != "/start":
@@ -181,59 +176,75 @@ async def webhook(request: Request):
             if flood_triggered:
                 delete_message(chat_id, data["message"]["message_id"])
                 time.sleep(1)
-                if last_warnings.get(user_id):
-                    delete_message(chat_id, last_warnings[user_id])
+                for mid in last_warnings.get(user_id, []):
+                    delete_message(chat_id, mid)
                 track_blocked_user(user_id, chat_id)
-                msg_id = send_message(chat_id, flood_message,
-                                      reply_markup=consent_buttons() if show_buttons else None)
-                last_warnings[user_id] = msg_id
+                msg_id = send_message(
+                    chat_id, flood_message, reply_markup=consent_buttons() if show_buttons else None)
+                last_warnings[user_id] = [msg_id]
                 return {"status": "flood_control_applied"}
 
+    # CALLBACK
     if "callback_query" in data:
         callback = data["callback_query"]
         message_id = callback["message"]["message_id"]
         user_choice = callback["data"]
 
         delete_message(chat_id, message_id)
-        if last_warnings.get(user_id):
-            delete_message(chat_id, last_warnings[user_id])
-            del last_warnings[user_id]
+        for mid in last_warnings.get(user_id, []):
+            delete_message(chat_id, mid)
+        last_warnings[user_id] = []
 
         if user_choice == "accept":
+            reset_user_state(user_id)
             add_subscriber(chat_id)
-            send_message(
+            confirm_id = send_message(
                 chat_id, "✅ Дякуємо! Ви дали згоду на обробку персональних даних.")
             send_first_news(chat_id)
-        elif user_choice == "decline":
+            delete_message(chat_id, confirm_id)
+            return {"status": "callback_handled"}
+
+        # decline case → check flood
+        flood_triggered, flood_message, show_buttons = check_flood(
+            user_id, chat_id)
+        if flood_triggered:
+            track_blocked_user(user_id, chat_id)
             msg_id = send_message(
-                chat_id,
-                "❌ Без згоди на обробку персональних даних бот не може працювати.\n\n"
-                "🔐 [Ознайомитись з політикою](https://bevarukraine.dk/uk/osobysti-dani/)",
-                reply_markup=consent_buttons()
-            )
-            last_warnings[user_id] = msg_id
+                chat_id, flood_message, reply_markup=consent_buttons() if show_buttons else None)
+            last_warnings[user_id] = [msg_id]
+            return {"status": "flood_control_applied"}
+
+        msg_id = send_message(
+            chat_id,
+            "❌ Без згоди на обробку персональних даних бот не може працювати.\n\n"
+            "🔐 [Ознайомитись з політикою](https://bevarukraine.dk/uk/osobysti-dani/)",
+            reply_markup=consent_buttons()
+        )
+        last_warnings[user_id] = [msg_id]
         return {"status": "callback_handled"}
 
+    # START
     if data.get("message", {}).get("text", "").strip().lower() == "/start":
-        send_welcome_photo(chat_id)
+        photo_id = send_welcome_photo(chat_id)
         welcome_text = (
             "🇩🇰 *Вітаємо на нашому новинному каналі!*\n\n"
-            "Тут ви знайдете найсвіжіші новини про події в Данії. "
-            "Ми тримаємо вас у курсі всіх важливих змін та новинок у країні.\n\n"
+            "Тут ви знайдете найсвіжіші новини про події в Данії. Ми тримаємо вас у курсі всіх важливих змін та новинок у країні.\n\n"
             "🔐 *Чи даєте ви згоду на обробку персональних даних?*\n"
             "[Ознайомитись з політикою](https://bevarukraine.dk/uk/osobysti-dani/)"
         )
         msg_id = send_message(chat_id, welcome_text,
                               reply_markup=consent_buttons())
-        last_warnings[user_id] = msg_id
+        last_warnings[user_id] = [photo_id, msg_id]
         return {"status": "consent_requested"}
 
-    if "message" in data:
-        delete_message(chat_id, data["message"]["message_id"])
+    # fallback
+    msg = data.get("message")
+    if msg and "message_id" in msg:
+        delete_message(chat_id, msg["message_id"])
         time.sleep(1)
 
-    if last_warnings.get(user_id):
-        delete_message(chat_id, last_warnings[user_id])
+    for mid in last_warnings.get(user_id, []):
+        delete_message(chat_id, mid)
 
     msg_id = send_message(
         chat_id,
@@ -241,5 +252,5 @@ async def webhook(request: Request):
         "[Ознайомитись з політикою](https://bevarukraine.dk/uk/osobysti-dani/)",
         reply_markup=consent_buttons()
     )
-    last_warnings[user_id] = msg_id
+    last_warnings[user_id] = [msg_id]
     return {"status": "consent_forced"}
