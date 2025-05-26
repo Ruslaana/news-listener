@@ -18,7 +18,7 @@ from middlewares.flood_control import (
     user_strikes
 )
 from bot.subscribers import add_subscriber
-from bot.utils import send_message, delete_message
+from bot.utils import send_message, delete_message, format_news_text
 from bot.scheduler import schedule_news_tasks
 
 load_dotenv()
@@ -26,26 +26,6 @@ load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 NEWS_API_URL = os.getenv("NEWS_API_URL")
 last_warnings = {}
-
-
-def format_telegram_text(news):
-    doc = news.get("document", {})
-    meta = doc.get("metadata", {})
-
-    title = doc.get("title", "")
-    content = doc.get("content", "")
-    publication_time = meta.get(
-        "publication_time") or datetime.now().strftime("%d.%m.%Y")
-    author = meta.get("author") or meta.get("source", "berlingske.dk")
-    source = meta.get("source", "")
-
-    header = f"📰 *{title}*\n\n"
-    footer = f"\n\n🕒 {publication_time}\n✍️ {author}\n🔗 [Читати новину]({source})"
-
-    max_content_len = 1024 - len(header) - len(footer)
-    short_content = content[:max_content_len].rstrip() + "..."
-
-    return header + short_content + footer
 
 
 def consent_buttons():
@@ -78,7 +58,7 @@ def send_first_news(chat_id):
             send_message(chat_id, "ℹ️ Новини ще не опубліковані.")
             return
 
-        text = format_telegram_text(news)
+        text = format_news_text(news)
         image_url = news.get("document", {}).get(
             "metadata", {}).get("image_url")
 
@@ -180,7 +160,10 @@ async def webhook(request: Request):
                     delete_message(chat_id, mid)
                 track_blocked_user(user_id, chat_id)
                 msg_id = send_message(
-                    chat_id, flood_message, reply_markup=consent_buttons() if show_buttons else None)
+                    chat_id,
+                    flood_message,
+                    reply_markup=consent_buttons() if show_buttons else None
+                )
                 last_warnings[user_id] = [msg_id]
                 return {"status": "flood_control_applied"}
 
@@ -210,7 +193,10 @@ async def webhook(request: Request):
         if flood_triggered:
             track_blocked_user(user_id, chat_id)
             msg_id = send_message(
-                chat_id, flood_message, reply_markup=consent_buttons() if show_buttons else None)
+                chat_id,
+                flood_message,
+                reply_markup=consent_buttons() if show_buttons else None
+            )
             last_warnings[user_id] = [msg_id]
             return {"status": "flood_control_applied"}
 

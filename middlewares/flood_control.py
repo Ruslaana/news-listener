@@ -14,11 +14,18 @@ ADMIN_EMAIL = "test@admin.dk"
 
 def save_blocked():
     os.makedirs("bot", exist_ok=True)
+
+    if not blocked_users and not permanent_ban and not active_blocks:
+        if os.path.exists(BLOCKS_FILE):
+            os.remove(BLOCKS_FILE)
+        return
+
     data = {
         "blocked_users": blocked_users,
         "permanent_ban": list(permanent_ban),
         "active_blocks": active_blocks
     }
+
     with open(BLOCKS_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
