@@ -33,8 +33,6 @@ def save_blocked():
 def load_blocked():
     os.makedirs("bot", exist_ok=True)
     if not os.path.exists(BLOCKS_FILE):
-        with open(BLOCKS_FILE, "w", encoding="utf-8") as f:
-            json.dump({}, f)
         return
 
     with open(BLOCKS_FILE, "r", encoding="utf-8") as f:
