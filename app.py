@@ -6,7 +6,6 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from threading import Thread
 from time import sleep
-from datetime import datetime
 from contextlib import asynccontextmanager
 
 from middlewares.flood_control import (
