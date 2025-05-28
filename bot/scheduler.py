@@ -89,19 +89,16 @@ def fetch_and_send_news():
         print("ℹ️ Немає підписників для розсилки.")
         return
 
-    # Спроба надіслати latest
     news = fetch_news("latest")
     if news and "document" in news:
         news_id = news["document"].get("id")
         if is_news_already_sent(news_id, sent_data):
-            # Якщо вже надсилали — беремо random
             news = fetch_news("random")
             if not news or "document" not in news:
                 print("⚠️ Архів порожній або помилка.")
                 return
             news_id = news["document"].get("id")
     else:
-        # latest не спрацював — одразу random
         news = fetch_news("random")
         if not news or "document" not in news:
             print("⚠️ Архів порожній або помилка.")
@@ -129,7 +126,7 @@ def schedule_news_tasks():
     scheduler.add_job(fetch_and_send_news, "cron", hour=20)
     scheduler.start()
 
-
+# TEST
 # def schedule_news_tasks():
-#     scheduler.add_job(lambda: fetch_and_send_news(), "interval", minutes=5)
+#     scheduler.add_job(lambda: fetch_and_send_news(), "interval", minutes=1)
 #     scheduler.start()
