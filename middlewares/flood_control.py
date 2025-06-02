@@ -43,6 +43,14 @@ def load_blocked():
         active_blocks = data.get("active_blocks", {})
 
 
+def load_blocked_users(path="blocked.json"):
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {"active_blocks": {}, "permanent_ban": []}
+
+
 def get_all_blocked_users():
     return {
         "blocked_users": blocked_users,

@@ -4,3 +4,9 @@ python-dotenv
 Flask
 flask-ngrok
 fastapi
+
+pytest
+pytest-asyncio
+pytest-cov
+moto[boto3]  
+requests-mock

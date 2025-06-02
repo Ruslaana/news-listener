@@ -60,6 +60,6 @@ def format_news_text(news_item):
     footer = f"\n\n🕒 {pub_time}\n✍️ {author}\n🔗 [Читати новину]({source})"
 
     max_content_len = 1024 - len(header) - len(footer)
-    short_content = content[:max_content_len].rstrip() + "..."
+    short_content = content[:max_content_len - 3].rstrip() + "..."
 
     return header + short_content + footer

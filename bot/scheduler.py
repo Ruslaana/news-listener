@@ -111,7 +111,10 @@ def fetch_and_send_news():
 
     text = format_news_text(news)
     for chat_id in chat_ids:
-        send_message(chat_id, text)
+        try:
+            send_message(chat_id, text)
+        except Exception as e:
+            print(f"❌ Error sending message to {chat_id}: {e}")
 
     mark_news_as_sent(news_id, sent_data)
     save_sent_ids(sent_data)

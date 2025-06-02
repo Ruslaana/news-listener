@@ -22,6 +22,13 @@ from bot.scheduler import schedule_news_tasks
 
 load_dotenv()
 
+# Для інтеграційних тестів (test_app_integration.py)
+SUBSCRIBERS_FILE = "subscribers.json"
+BLOCKED_FILE = "blocked.json"
+UNBLOCKED_FILE = "unblocked.json"
+save_subscriber = add_subscriber
+
+
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 NEWS_API_URL = os.getenv("NEWS_API_URL")
 last_warnings = {}
@@ -78,42 +85,46 @@ def send_first_news(chat_id):
         send_message(chat_id, "⚠️ Не вдалося завантажити новину.")
 
 
+def process_unblocked_once():
+    expired = get_expired_unblocks()
+    for user_id, chat_id in expired:
+        if last_warnings.get(user_id):
+            for mid in last_warnings[user_id]:
+                delete_message(chat_id, mid)
+            del last_warnings[user_id]
+
+        done_msg_id = send_message(chat_id, "✅ Блок завершено.")
+        time.sleep(1)
+        delete_message(chat_id, done_msg_id)
+
+        strike = user_strikes.get(user_id, 0)
+
+        if strike == 1:
+            info_text = (
+                "🔐 Для користування ботом потрібно підтвердити обробку персональних даних.\n"
+                "[Ознайомитись з політикою](https://bevarukraine.dk/uk/osobysti-dani/)\n\n"
+                "❗ Якщо ви натиснете ще раз \"Ні\", вас буде заблоковано на 3 хвилини."
+            )
+        elif strike == 2:
+            info_text = (
+                "🔐 Для користування ботом потрібно підтвердити обробку персональних даних.\n"
+                "[Ознайомитись з політикою](https://bevarukraine.dk/uk/osobysti-dani/)\n\n"
+                "❗ Якщо ви натиснете ще раз \"Ні\", вас буде заблоковано назавжди."
+            )
+        else:
+            info_text = (
+                "🔐 Для користування ботом потрібно підтвердити обробку персональних даних.\n"
+                "[Ознайомитись з політикою](https://bevarukraine.dk/uk/osobysti-dani/)"
+            )
+
+        msg_id = send_message(chat_id, info_text,
+                              reply_markup=consent_buttons())
+        last_warnings[user_id] = [msg_id]
+
+
 def notify_unblocked_users():
     while True:
-        expired = get_expired_unblocks()
-        for user_id, chat_id in expired:
-            if last_warnings.get(user_id):
-                for mid in last_warnings[user_id]:
-                    delete_message(chat_id, mid)
-                del last_warnings[user_id]
-
-            done_msg_id = send_message(chat_id, "✅ Блок завершено.")
-            time.sleep(1)
-            delete_message(chat_id, done_msg_id)
-
-            strike = user_strikes.get(user_id, 0)
-
-            if strike == 1:
-                info_text = (
-                    "🔐 Для користування ботом потрібно підтвердити обробку персональних даних.\n"
-                    "[Ознайомитись з політикою](https://bevarukraine.dk/uk/osobysti-dani/)\n\n"
-                    "❗ Якщо ви натиснете ще раз \"Ні\", вас буде заблоковано на 3 хвилини."
-                )
-            elif strike == 2:
-                info_text = (
-                    "🔐 Для користування ботом потрібно підтвердити обробку персональних даних.\n"
-                    "[Ознайомитись з політикою](https://bevarukraine.dk/uk/osobysti-dani/)\n\n"
-                    "❗ Якщо ви натиснете ще раз \"Ні\", вас буде заблоковано назавжди."
-                )
-            else:
-                info_text = (
-                    "🔐 Для користування ботом потрібно підтвердити обробку персональних даних.\n"
-                    "[Ознайомитись з політикою](https://bevarukraine.dk/uk/osobysti-dani/)"
-                )
-
-            msg_id = send_message(chat_id, info_text,
-                                  reply_markup=consent_buttons())
-            last_warnings[user_id] = [msg_id]
+        process_unblocked_once()
         sleep(3)
 
 
@@ -130,12 +141,19 @@ app = FastAPI(lifespan=lifespan)
 @app.get("/subscribers")
 def get_subscribers():
     from bot.subscribers import load_subscribers
-    return load_subscribers()
+    return load_subscribers(SUBSCRIBERS_FILE)
 
 
 @app.get("/blocked")
 def get_blocked_users():
-    return get_all_blocked_users()
+    from middlewares.flood_control import load_blocked_users
+    return load_blocked_users(BLOCKED_FILE)
+
+
+@app.post("/process-unblocked")
+def trigger_unblock():
+    process_unblocked_once()
+    return {"status": "done"}
 
 
 @app.post("/webhook")
